@@ -1,31 +1,80 @@
+# azure-pipelines.yml
 trigger:
+  branches:
+    include:
+      - main
+pr:
   - main
 
 pool:
-  vmImage: 'windows-latest'
+  name: SelfHostedPool
 
 variables:
   buildConfiguration: 'Release'
+  sdkVersion: '9.0.x'
+  # 專案路徑（依你的解決方案結構調整）
+  apiProject: 'src/SimpleAPI/SimpleAPI.csproj'
+  testProject: 'SimpleAPI.Test/SimpleAPI.Test.csproj'
+  publishDir: '$(Build.ArtifactStagingDirectory)/publish'
 
 steps:
+# 1) 安裝 .NET 9 SDK
 - task: UseDotNet@2
+  displayName: 'Use .NET SDK $(sdkVersion)'
   inputs:
     packageType: 'sdk'
-    version: '9.0.x'
+    version: '$(sdkVersion)'
 
+# 2) NuGet 快取（加速 CI）
+- task: Cache@2
+  displayName: 'Cache NuGet'
+  inputs:
+    key: 'nuget | "$(Agent.OS)" | **/packages.lock.json'
+    restoreKeys: 'nuget | "$(Agent.OS)"'
+    path: '$(NUGET_PACKAGES)'
+
+# 3) 還原
 - task: DotNetCoreCLI@2
+  displayName: 'dotnet restore'
   inputs:
     command: 'restore'
-    projects: '**/*.csproj'
+    projects: |
+      $(apiProject)
+      $(testProject)
 
+# 4) 建置
 - task: DotNetCoreCLI@2
+  displayName: 'dotnet build'
   inputs:
     command: 'build'
-    projects: '**/*.csproj'
-    arguments: '--configuration $(buildConfiguration)'
+    projects: |
+      $(apiProject)
+      $(testProject)
+    arguments: '--configuration $(buildConfiguration) --no-restore'
 
+# 5) 測試（輸出 TRX）
 - task: DotNetCoreCLI@2
+  displayName: 'dotnet test'
   inputs:
     command: 'test'
-    projects: '**/*Tests.csproj'
-    arguments: '--configuration $(buildConfiguration)'
+    projects: '$(testProject)'
+    arguments: '--configuration $(buildConfiguration) --no-build --logger "trx;LogFileName=test.trx"'
+    publishTestResults: true
+
+# 6) 發佈 Web（產生可部署 ZIP）
+- task: DotNetCoreCLI@2
+  displayName: 'dotnet publish'
+  inputs:
+    command: 'publish'
+    projects: '$(apiProject)'
+    arguments: '--configuration $(buildConfiguration) --no-build -o $(publishDir)'
+    publishWebProjects: false
+    zipAfterPublish: true
+
+# 7) 上傳成 Artifact（供下載/部署階段使用）
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact'
+  inputs:
+    PathtoPublish: '$(publishDir)'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'
